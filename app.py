@@ -2,132 +2,110 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
 import os
 
-# ============================================
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import silhouette_score
+
+# =========================================
 # PAGE CONFIGURATION
-# ============================================
+# =========================================
 
 st.set_page_config(
-    page_title="Weather Prediction System",
-    page_icon="🌦️",
+    page_title="Climate Pattern Clustering",
+    page_icon="🌍",
     layout="wide"
 )
 
-MODEL_PATH = "weather_prediction_model.pkl"
-FEATURES_PATH = "weather_feature_names.pkl"
+st.title("🌍 Climate Pattern Clustering System")
 
+st.markdown(
+    """
+    This application identifies climate patterns using
+    two unsupervised machine learning algorithms:
 
-# ============================================
-# LOAD MODEL AND FEATURES
-# ============================================
+    - K-Means Clustering
+    - Hierarchical Clustering
+
+    Upload weather observations to discover groups with
+    similar temperature, humidity, rainfall, pressure,
+    sunshine, and wind characteristics.
+    """
+)
+
+st.divider()
+
+# =========================================
+# LOAD TRAINED MODEL
+# =========================================
+
+MODEL_PATH = "climate_clustering_model.pkl"
+
 
 @st.cache_resource
 def load_model():
     return joblib.load(MODEL_PATH)
 
 
-@st.cache_data
-def load_features():
-    return joblib.load(FEATURES_PATH)
-
-
-# ============================================
-# HEADER
-# ============================================
-
-st.title("🌦️ Weather Prediction System")
-
-st.write(
-    "Predict whether it will rain tomorrow "
-    "using historical weather observations."
-)
-
-st.info(
-    "This application uses a machine learning model "
-    "trained on the Weather_Data.csv dataset."
-)
-
-
-# ============================================
-# CHECK REQUIRED FILES
-# ============================================
-
 if not os.path.exists(MODEL_PATH):
     st.error(
-        "Model file not found. Upload "
-        "weather_prediction_model.pkl to GitHub."
-    )
-    st.stop()
-
-if not os.path.exists(FEATURES_PATH):
-    st.error(
-        "Feature file not found. Upload "
-        "weather_feature_names.pkl to GitHub."
+        "Model file not found. Please upload "
+        "climate_clustering_model.pkl to GitHub."
     )
     st.stop()
 
 try:
-    model = load_model()
-    expected_features = load_features()
+    bundle = load_model()
+
+    features = bundle["features"]
+    imputer = bundle["imputer"]
+    scaler = bundle["scaler"]
+    kmeans = bundle["kmeans"]
+    hierarchical = bundle["hierarchical"]
 
 except Exception as e:
-    st.error(f"Unable to load the model: {e}")
+    st.error(f"Unable to load the clustering model: {e}")
     st.stop()
 
 
-# ============================================
+# =========================================
 # UPLOAD DATASET
-# ============================================
+# =========================================
 
 st.subheader("📂 Upload Weather Dataset")
 
 uploaded_file = st.file_uploader(
-    "Choose your Weather_Data.csv file",
+    "Upload Weather_Data.csv",
     type=["csv"]
 )
 
 if uploaded_file is not None:
 
     try:
-
-        # ============================================
-        # READ DATASET
-        # ============================================
-
         data = pd.read_csv(uploaded_file)
 
         st.success("Dataset uploaded successfully!")
 
         col1, col2 = st.columns(2)
 
-        col1.metric(
-            "Total Records",
-            data.shape[0]
-        )
+        col1.metric("Total Records", data.shape[0])
+        col2.metric("Total Columns", data.shape[1])
 
-        col2.metric(
-            "Total Columns",
-            data.shape[1]
-        )
-
-        st.subheader("📊 Dataset Preview")
+        st.subheader("Dataset Preview")
 
         st.dataframe(
             data.head(10),
             use_container_width=True
         )
 
-        # ============================================
-        # PREPARE INPUT DATA
-        # ============================================
+        # =========================================
+        # PREPROCESS DATA
+        # =========================================
 
-        input_data = data.drop(
-            columns=["RainTomorrow"],
-            errors="ignore"
-        ).copy()
+        input_data = data.copy()
 
-        # Generate Month from the original Date column
         if "Date" in input_data.columns:
 
             dates = pd.to_datetime(
@@ -138,165 +116,286 @@ if uploaded_file is not None:
 
             input_data["Month"] = dates.dt.month
 
-            input_data = input_data.drop(
-                columns=["Date"]
-            )
-
-        # ============================================
-        # VALIDATE INPUT FEATURES
-        # ============================================
-
+        # Validate required columns
         missing_features = [
-            feature
-            for feature in expected_features
-            if feature not in input_data.columns
+            col for col in features
+            if col not in input_data.columns
+            and col != "Month"
         ]
 
         if missing_features:
 
             st.error(
-                "Missing required features: "
+                "Required climate features are missing: "
                 + ", ".join(missing_features)
-            )
-
-            st.write(
-                "Please upload the weather dataset "
-                "used for training the model."
             )
 
             st.stop()
 
-        # Keep the exact training feature order
-        input_data = input_data[
-            expected_features
-        ].copy()
+        # Ensure Month exists
+        if "Month" in features and "Month" not in input_data.columns:
+            st.error(
+                "The dataset must contain a Date column "
+                "so the Month feature can be extracted."
+            )
+            st.stop()
 
-        # ============================================
-        # PREDICTION BUTTON
-        # ============================================
+        X = input_data[features].copy()
 
-        st.subheader("🔍 Weather Prediction")
+        # Convert features to numeric
+        X = X.apply(
+            pd.to_numeric,
+            errors="coerce"
+        )
+
+        X = X.replace(
+            [np.inf, -np.inf],
+            np.nan
+        )
+
+        # =========================================
+        # RUN CLUSTERING
+        # =========================================
 
         if st.button(
-            "Predict Tomorrow's Weather",
+            "Discover Climate Patterns",
             type="primary"
         ):
 
-            with st.spinner("Predicting weather..."):
+            if len(X) < 3:
+                st.error(
+                    "Upload at least three valid records "
+                    "for clustering."
+                )
+                st.stop()
 
-                # Generate predictions
-                predictions = model.predict(input_data)
+            with st.spinner("Identifying climate patterns..."):
 
-                # Generate probabilities
-                probabilities = model.predict_proba(
-                    input_data
+                # Use preprocessing fitted during training
+                X_imputed = imputer.transform(X)
+
+                X_scaled = scaler.transform(X_imputed)
+
+                # K-Means predictions for new observations
+                kmeans_labels = kmeans.predict(X_scaled)
+
+                # Hierarchical clustering does not provide
+                # a native predict() method. Therefore,
+                # fit it to the uploaded observations.
+                n_clusters = hierarchical.n_clusters
+
+                if len(X) <= n_clusters:
+                    st.error(
+                        "Upload more records than the number "
+                        "of clusters for hierarchical clustering."
+                    )
+                    st.stop()
+
+                hierarchical_new = AgglomerativeClustering(
+                    n_clusters=n_clusters,
+                    linkage="ward"
                 )
 
-                # Find the probability column for class 1
-                classes = list(
-                    model.named_steps["classifier"].classes_
+                hierarchical_labels = (
+                    hierarchical_new.fit_predict(X_scaled)
                 )
 
-                positive_class_index = classes.index(1)
-
-                rain_probabilities = (
-                    probabilities[:, positive_class_index]
-                    * 100
-                )
-
-                # Convert numeric predictions into labels
-                labels = [
-                    "Yes" if prediction == 1 else "No"
-                    for prediction in predictions
-                ]
-
-                # ============================================
+                # =========================================
                 # CREATE RESULTS
-                # ============================================
+                # =========================================
 
                 results = data.copy()
 
-                results["RainTomorrow_Prediction"] = labels
+                results["KMeans_Cluster"] = kmeans_labels
 
-                results["Rain_Probability_Percent"] = (
-                    rain_probabilities.round(2)
+                results["Hierarchical_Cluster"] = (
+                    hierarchical_labels
                 )
 
-                # ============================================
-                # DISPLAY SUMMARY
-                # ============================================
+                # =========================================
+                # EVALUATION
+                # =========================================
+
+                km_score = silhouette_score(
+                    X_scaled,
+                    kmeans_labels
+                )
+
+                hc_score = silhouette_score(
+                    X_scaled,
+                    hierarchical_labels
+                )
 
                 st.success(
-                    "Predictions generated successfully!"
+                    "Climate pattern clustering completed!"
                 )
 
-                rain_count = labels.count("Yes")
-                no_rain_count = labels.count("No")
+                # =========================================
+                # CLUSTER SUMMARY
+                # =========================================
 
-                col1, col2, col3 = st.columns(3)
+                st.subheader("📊 Cluster Distribution")
 
-                col1.metric(
-                    "Total Predictions",
-                    len(labels)
+                col1, col2 = st.columns(2)
+
+                with col1:
+
+                    st.markdown("### K-Means")
+
+                    km_counts = (
+                        results["KMeans_Cluster"]
+                        .value_counts()
+                        .sort_index()
+                    )
+
+                    st.bar_chart(km_counts)
+
+                    st.metric(
+                        "Silhouette Score",
+                        round(km_score, 4)
+                    )
+
+                with col2:
+
+                    st.markdown("### Hierarchical")
+
+                    hc_counts = (
+                        results["Hierarchical_Cluster"]
+                        .value_counts()
+                        .sort_index()
+                    )
+
+                    st.bar_chart(hc_counts)
+
+                    st.metric(
+                        "Silhouette Score",
+                        round(hc_score, 4)
+                    )
+
+                # =========================================
+                # CLUSTER VISUALIZATION
+                # =========================================
+
+                st.subheader("🌡️ Climate Pattern Visualization")
+
+                fig, axes = plt.subplots(
+                    1, 2,
+                    figsize=(14, 5)
                 )
 
-                col2.metric(
-                    "Predicted Rain",
-                    rain_count
+                sns.scatterplot(
+                    x=X["MaxTemp"],
+                    y=X["Humidity3pm"],
+                    hue=kmeans_labels,
+                    palette="viridis",
+                    alpha=0.7,
+                    ax=axes[0]
                 )
 
-                col3.metric(
-                    "Predicted No Rain",
-                    no_rain_count
+                axes[0].set_title("K-Means Clusters")
+                axes[0].set_xlabel("Maximum Temperature")
+                axes[0].set_ylabel("Humidity at 3 PM")
+
+                sns.scatterplot(
+                    x=X["MaxTemp"],
+                    y=X["Humidity3pm"],
+                    hue=hierarchical_labels,
+                    palette="Set2",
+                    alpha=0.7,
+                    ax=axes[1]
                 )
 
-                # ============================================
+                axes[1].set_title("Hierarchical Clusters")
+                axes[1].set_xlabel("Maximum Temperature")
+                axes[1].set_ylabel("Humidity at 3 PM")
+
+                st.pyplot(fig)
+
+                plt.close(fig)
+
+                # =========================================
+                # CLUSTER PROFILES
+                # =========================================
+
+                st.subheader("📋 K-Means Climate Profiles")
+
+                profile_data = X.copy()
+
+                profile_data["Cluster"] = kmeans_labels
+
+                profiles = profile_data.groupby(
+                    "Cluster"
+                ).mean()
+
+                st.dataframe(
+                    profiles.round(2),
+                    use_container_width=True
+                )
+
+                # =========================================
+                # ALGORITHM COMPARISON
+                # =========================================
+
+                st.subheader("⚖️ Algorithm Comparison")
+
+                comparison = pd.DataFrame({
+                    "Algorithm": [
+                        "K-Means",
+                        "Hierarchical Clustering"
+                    ],
+                    "Silhouette Score": [
+                        km_score,
+                        hc_score
+                    ]
+                })
+
+                st.dataframe(
+                    comparison,
+                    use_container_width=True
+                )
+
+                # =========================================
                 # DISPLAY RESULTS
-                # ============================================
+                # =========================================
 
-                st.subheader("📋 Prediction Results")
+                st.subheader("📄 Final Cluster Assignments")
 
                 st.dataframe(
                     results,
                     use_container_width=True
                 )
 
-                # ============================================
+                # =========================================
                 # DOWNLOAD RESULTS
-                # ============================================
+                # =========================================
 
                 csv_output = results.to_csv(
                     index=False
                 ).encode("utf-8")
 
                 st.download_button(
-                    label="⬇️ Download Predictions",
+                    label="⬇️ Download Cluster Results",
                     data=csv_output,
-                    file_name="weather_predictions.csv",
+                    file_name="climate_cluster_results.csv",
                     mime="text/csv"
                 )
 
     except Exception as e:
 
         st.error(
-            f"Unable to process the uploaded dataset: {e}"
+            f"Unable to process the dataset: {e}"
         )
 
 else:
 
     st.info(
-        "Upload Weather_Data.csv to start predicting."
+        "Upload your weather CSV file to begin clustering."
     )
-
-
-# ============================================
-# FOOTER
-# ============================================
 
 st.divider()
 
 st.caption(
-    "Weather Prediction System | "
-    "Random Forest Classification | "
-    "Machine Learning Project"
+    "Climate Pattern Clustering | "
+    "K-Means and Hierarchical Clustering | "
+    "Unsupervised Machine Learning"
 )
