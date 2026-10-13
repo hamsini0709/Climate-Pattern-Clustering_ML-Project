@@ -172,9 +172,27 @@ if uploaded_file is not None:
             with st.spinner("Identifying climate patterns..."):
 
                 # Use preprocessing fitted during training
-                X_imputed = imputer.transform(X)
+               # Validate input features
+X = X[features].copy()
 
-                X_scaled = scaler.transform(X_imputed)
+# Convert all features to numeric
+X = X.apply(pd.to_numeric, errors="coerce")
+
+# Replace infinite values
+X = X.replace([np.inf, -np.inf], np.nan)
+
+# Recreate preprocessing objects if needed
+if not hasattr(imputer, "_fill_dtype"):
+    imputer = SimpleImputer(strategy="median")
+    imputer.fit(X)
+
+    scaler = StandardScaler()
+    X_imputed = imputer.transform(X)
+    X_scaled = scaler.fit_transform(X_imputed)
+
+else:
+    X_imputed = imputer.transform(X)
+    X_scaled = scaler.transform(X_imputed)
 
                 # K-Means predictions for new observations
                 kmeans_labels = kmeans.predict(X_scaled)
